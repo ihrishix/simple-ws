@@ -88,15 +88,6 @@ wss.on("connection", (ws, req) => {
     users.set(spaceId, new Map([[ws, user]]));
   }
 
-  // Send TTL information to client
-  ws.send(
-    JSON.stringify({
-      type: "spaceInfo",
-      ttlHours: TTL_HOURS,
-      lastActive: spaceLastActivity.get(spaceId),
-    })
-  );
-
   // Broadcast to all users that a new user has connected
   broadcast({
     type: "userConnected",
