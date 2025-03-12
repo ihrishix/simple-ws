@@ -1,13 +1,53 @@
 const { parse } = require("path");
 const WebSocket = require("ws");
 
+// Constants for TTL
+const TTL_HOURS = 6;
+const TTL_MS = TTL_HOURS * 60 * 60 * 1000; // 6 hours in milliseconds
+const CLEANUP_INTERVAL_MS = 15 * 60 * 1000; // Check every 15 minutes
+
 // Create a WebSocket server
 const wss = new WebSocket.Server({ port: 8080 });
 
-// Track connected users
+// Track connected users and space activity
 let users = new Map();
-// map (spaceId, map(ws, user))
-// user: {userId, userDetails: null}
+let spaceLastActivity = new Map(); // Tracks last activity time for each space
+
+// Function to update space activity
+function updateSpaceActivity(spaceId) {
+  spaceLastActivity.set(spaceId, Date.now());
+}
+
+// Function to clean up inactive spaces
+function cleanupInactiveSpaces() {
+  const now = Date.now();
+  for (const [spaceId, lastActivity] of spaceLastActivity.entries()) {
+    if (now - lastActivity > TTL_MS) {
+      const space = users.get(spaceId);
+      if (space) {
+        // Disconnect all users in the space
+        for (const [ws] of space.entries()) {
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(
+              JSON.stringify({
+                type: "error",
+                message: "Space expired due to inactivity",
+              })
+            );
+            ws.close();
+          }
+        }
+        // Clean up the space
+        users.delete(spaceId);
+        spaceLastActivity.delete(spaceId);
+        console.log(`Space ${spaceId} cleaned up due to inactivity`);
+      }
+    }
+  }
+}
+
+// Start cleanup interval
+setInterval(cleanupInactiveSpaces, CLEANUP_INTERVAL_MS);
 
 // Function to broadcast a message to all connected clients
 function broadcast(message) {
@@ -30,10 +70,14 @@ wss.on("connection", (ws, req) => {
     return;
   }
 
+  // Update space activity on connection
+  updateSpaceActivity(spaceId);
+
   let totalUsersSpace = 1;
   let user = {
     userId: Date.now().toString(),
     userDetails: null,
+    lastActive: Date.now(),
   };
 
   if (users.has(spaceId)) {
@@ -43,6 +87,15 @@ wss.on("connection", (ws, req) => {
   } else {
     users.set(spaceId, new Map([[ws, user]]));
   }
+
+  // Send TTL information to client
+  ws.send(
+    JSON.stringify({
+      type: "spaceInfo",
+      ttlHours: TTL_HOURS,
+      lastActive: spaceLastActivity.get(spaceId),
+    })
+  );
 
   // Broadcast to all users that a new user has connected
   broadcast({
@@ -55,13 +108,24 @@ wss.on("connection", (ws, req) => {
 
   // Handle incoming messages from this client
   ws.on("message", (data) => {
-    //user connected
+    // Update space activity on any message
     try {
       const parsedMessage = JSON.parse(data.toString());
       if (parsedMessage.type === "register") {
         handleRegister(ws, spaceId, parsedMessage);
       } else if (parsedMessage.type === "event") {
+        updateSpaceActivity(spaceId);
         broadcast(parsedMessage);
+      } else if (parsedMessage.type === "ping") {
+        // Handle keepalive pings
+        ws.send(
+          JSON.stringify({
+            type: "pong",
+            serverTime: Date.now(),
+            ttlRemaining:
+              TTL_MS - (Date.now() - spaceLastActivity.get(spaceId)),
+          })
+        );
       }
     } catch (error) {
       console.log("Invalid message", error);
@@ -70,24 +134,43 @@ wss.on("connection", (ws, req) => {
 
   // Handle user disconnection
   ws.on("close", () => {
-    const disconnectedUserId = users.get(spaceId).get(ws).userId;
-    users.get(spaceId).delete(ws);
+    const space = users.get(spaceId);
+    if (space) {
+      const disconnectedUserId = space.get(ws)?.userId;
+      space.delete(ws);
 
-    // Broadcast to all users that a user has disconnected
-    broadcast({
-      type: "userDisconnected",
-      userId: disconnectedUserId,
-      totalUsers: users.get(spaceId).size,
-    });
+      // If space is empty, mark it for cleanup but don't delete immediately
+      if (space.size === 0) {
+        console.log(
+          `Space ${spaceId} is empty, will be cleaned up after ${TTL_HOURS} hours of inactivity`
+        );
+      }
+
+      // Broadcast to all users that a user has disconnected
+      broadcast({
+        type: "userDisconnected",
+        userId: disconnectedUserId,
+        totalUsers: space.size,
+      });
+    }
   });
 });
 
 function handleRegister(ws, spaceId, parsedMessage) {
-  const user = users.get(spaceId).get(ws);
+  const space = users.get(spaceId);
+  if (!space) return;
+
+  const user = space.get(ws);
+  if (!user) return;
+
   user.userDetails = {
     name: parsedMessage.name,
     avatar: parsedMessage.avatar,
   };
+  user.lastActive = Date.now();
+
+  // Update space activity on registration
+  updateSpaceActivity(spaceId);
 
   broadcast({
     type: "register",
