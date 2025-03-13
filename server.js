@@ -65,6 +65,7 @@ wss.on("connection", (ws, req) => {
   const spaceId = params.get("spaceId");
 
   if (!spaceId) {
+    console.log("Space ID is required");
     ws.send(JSON.stringify({ type: "error", message: "Space ID is required" }));
     ws.close();
     return;
@@ -87,10 +88,17 @@ wss.on("connection", (ws, req) => {
     users.set(spaceId, new Map([[ws, user]]));
   }
 
+  console.log({
+    type: "userConnected",
+    userId: user.userId,
+    totalUsers: totalUsersSpace,
+  });
+
   // Broadcast to all users that a new user has connected
   broadcast({
     type: "userConnected",
     userId: user.userId,
+    spaceId,
     totalUsers: totalUsersSpace,
   });
 
@@ -98,8 +106,14 @@ wss.on("connection", (ws, req) => {
     JSON.stringify({
       type: "userData",
       users: Array.from(users.get(spaceId).values()),
+      spaceId,
     })
   );
+
+  // console.log({
+  //   type: "userData",
+  //   users: Array.from(users.get(spaceId).values()),
+  // });
 
   // Handle incoming messages from this client
   ws.on("message", (data) => {
@@ -111,16 +125,6 @@ wss.on("connection", (ws, req) => {
       } else if (parsedMessage.type === "event") {
         updateSpaceActivity(spaceId);
         broadcast(parsedMessage);
-      } else if (parsedMessage.type === "ping") {
-        // Handle keepalive pings
-        ws.send(
-          JSON.stringify({
-            type: "pong",
-            serverTime: Date.now(),
-            ttlRemaining:
-              TTL_MS - (Date.now() - spaceLastActivity.get(spaceId)),
-          })
-        );
       }
     } catch (error) {
       console.log("Invalid message", error);
@@ -146,6 +150,7 @@ wss.on("connection", (ws, req) => {
         type: "userDisconnected",
         userId: disconnectedUserId,
         totalUsers: space.size,
+        spaceId,
       });
     }
   });
@@ -165,6 +170,7 @@ function handleRegister(ws, spaceId, parsedMessage) {
   updateSpaceActivity(spaceId);
 
   broadcast({
+    spaceId,
     from: parsedMessage.from,
     type: "register",
     user,
