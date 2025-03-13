@@ -76,7 +76,6 @@ wss.on("connection", (ws, req) => {
   let totalUsersSpace = 1;
   let user = {
     userId: Date.now().toString(),
-    userDetails: null,
     lastActive: Date.now(),
   };
 
@@ -95,7 +94,12 @@ wss.on("connection", (ws, req) => {
     totalUsers: totalUsersSpace,
   });
 
-  ws.send(JSON.stringify({ users: Array.from(users.get(spaceId).values()) }));
+  ws.send(
+    JSON.stringify({
+      type: "userData",
+      users: Array.from(users.get(spaceId).values()),
+    })
+  );
 
   // Handle incoming messages from this client
   ws.on("message", (data) => {
@@ -154,16 +158,14 @@ function handleRegister(ws, spaceId, parsedMessage) {
   const user = space.get(ws);
   if (!user) return;
 
-  user.userDetails = {
-    name: parsedMessage.name,
-    avatar: parsedMessage.avatar,
-  };
-  user.lastActive = Date.now();
+  user.name = parsedMessage.name;
+  user.avatar = parsedMessage.avatar;
 
   // Update space activity on registration
   updateSpaceActivity(spaceId);
 
   broadcast({
+    from: parsedMessage.from,
     type: "register",
     user,
   });
